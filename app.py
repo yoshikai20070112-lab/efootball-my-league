@@ -6,16 +6,55 @@ import streamlit as st
 import pandas as pd
 
 DB_PATH = Path(__file__).with_name("my_league.db")
-MY_TEAM = "FC Barcelona"
+MY_TEAM = "バルセロナ"
 INITIAL_SEASON = "2026/27"
 
 DEFAULT_TEAMS = [
-    "Athletic Club", "Atlético de Madrid", "CA Osasuna", "Celta",
-    "Deportivo Alavés", "Elche CF", "FC Barcelona", "Getafe CF",
-    "Levante UD", "Málaga CF", "R. Racing Club", "Rayo Vallecano",
-    "RC Deportivo", "RCD Espanyol", "Real Betis", "Real Madrid",
-    "Real Sociedad", "Sevilla FC", "Valencia CF", "Villarreal CF",
+    "アラバ AB",
+    "ビルバオ BR",
+    "バルセロナ",
+    "ヘタフェ A",
+    "リョブレガト AB",
+    "マドリー チャマルティン B",
+    "マドリー ロサス RB",
+    "マヨルカ",
+    "パンプローナ RA",
+    "セビージャ ネルビオン BR",
+    "セビージャ トリアナ VB",
+    "バレンシア BN",
+    "バスコ ギプスコア AB",
+    "ビーゴ AB",
+    "ビジャレアル A",
+    "ジローナR",
+    "バジェカスBR",
+    "レバンテRA",
+    "エルチェBV",
+    "オビエドA",
 ]
+
+# 以前の英語チーム名から、現在の固定チーム名への対応表。
+TEAM_RENAMES = {
+    "Deportivo Alavés": "アラバ AB",
+    "Athletic Club": "ビルバオ BR",
+    "FC Barcelona": "バルセロナ",
+    "Getafe CF": "ヘタフェ A",
+    "RCD Espanyol": "リョブレガト AB",
+    "Real Madrid": "マドリー チャマルティン B",
+    "Atlético de Madrid": "マドリー ロサス RB",
+    "RCD Mallorca": "マヨルカ",
+    "CA Osasuna": "パンプローナ RA",
+    "Sevilla FC": "セビージャ ネルビオン BR",
+    "Real Betis": "セビージャ トリアナ VB",
+    "Valencia CF": "バレンシア BN",
+    "Real Sociedad": "バスコ ギプスコア AB",
+    "Celta": "ビーゴ AB",
+    "Villarreal CF": "ビジャレアル A",
+    "Girona FC": "ジローナR",
+    "Rayo Vallecano": "バジェカスBR",
+    "Levante UD": "レバンテRA",
+    "Elche CF": "エルチェBV",
+    "Real Oviedo": "オビエドA",
+}
 
 st.set_page_config(page_title="マイリーグ管理", page_icon="⚽", layout="wide")
 
@@ -79,8 +118,17 @@ def init_db():
         if "season_id" not in columns:
             con.execute("ALTER TABLE matches ADD COLUMN season_id INTEGER")
 
-        if con.execute("SELECT COUNT(*) FROM teams").fetchone()[0] == 0:
-            con.executemany("INSERT INTO teams(name) VALUES (?)", [(t,) for t in DEFAULT_TEAMS])
+        # 固定の20チームを登録。既存データの対戦相手IDは維持したまま名称を更新する。
+        existing_names = {r[0] for r in con.execute("SELECT name FROM teams").fetchall()}
+        for old_name, new_name in TEAM_RENAMES.items():
+            if old_name in existing_names and new_name not in existing_names:
+                con.execute("UPDATE teams SET name=? WHERE name=?", (new_name, old_name))
+                existing_names.remove(old_name)
+                existing_names.add(new_name)
+        for team_name in DEFAULT_TEAMS:
+            if team_name not in existing_names:
+                con.execute("INSERT OR IGNORE INTO teams(name) VALUES (?)", (team_name,))
+                existing_names.add(team_name)
 
         if con.execute("SELECT COUNT(*) FROM seasons").fetchone()[0] == 0:
             con.execute(
@@ -101,8 +149,17 @@ def init_db():
 
 
 def get_teams():
+    # アプリ上で使用するチームは指定された20チームに固定する。
+    placeholders = ",".join("?" for _ in DEFAULT_TEAMS)
     with connect() as con:
-        return pd.read_sql_query("SELECT id, name FROM teams ORDER BY name", con)
+        return pd.read_sql_query(
+            f"SELECT id, name FROM teams WHERE name IN ({placeholders}) "
+            "ORDER BY CASE name " + " ".join(
+                f"WHEN ? THEN {i}" for i, _ in enumerate(DEFAULT_TEAMS)
+            ) + " END",
+            con,
+            params=tuple(DEFAULT_TEAMS) + tuple(DEFAULT_TEAMS)
+        )
 
 
 def get_seasons():
@@ -269,7 +326,7 @@ is_active = selected_season["status"] == "進行中"
 
 page = st.sidebar.radio("📋 メニュー", [
     "ホーム", "順位表", "試合登録", "得点ランキング",
-    "アシストランキング", "試合履歴", "シーズン管理", "チーム管理"
+    "アシストランキング", "試合履歴", "シーズン管理"
 ])
 st.sidebar.caption(f"現在表示中：{selected_season['name']}（{selected_season['status']}）")
 st.sidebar.markdown("---")
@@ -438,42 +495,6 @@ elif page == "シーズン管理":
                     except sqlite3.IntegrityError:
                         st.error("そのシーズン名はすでに登録されています。")
 
-# チーム管理
-elif page == "チーム管理":
-    st.subheader("🛠️ チーム管理")
-    st.caption("チームの追加・削除ができます。試合記録に使われているチームは削除できません。")
-    st.dataframe(teams[["name"]].rename(columns={"name":"チーム名"}),
-                 use_container_width=True, hide_index=True)
-    st.markdown("#### ➕ チームを追加")
-    with st.form("add_team"):
-        new_team = st.text_input("追加するチーム名")
-        add = st.form_submit_button("チームを追加")
-        if add:
-            name = new_team.strip()
-            if not name:
-                st.error("チーム名を入力してください。")
-            else:
-                try:
-                    with connect() as con:
-                        con.execute("INSERT INTO teams(name) VALUES (?)",(name,))
-                    st.success(f"{name} を追加しました。")
-                    st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("そのチームはすでに登録されています。")
-    st.markdown("#### 🗑️ チームを削除")
-    removable = teams[teams["name"] != MY_TEAM]
-    if not removable.empty:
-        selected_team = st.selectbox("削除するチーム",removable["name"].tolist())
-        if st.button("選択したチームを削除",type="secondary"):
-            tid = int(removable.loc[removable["name"]==selected_team,"id"].iloc[0])
-            with connect() as con:
-                used = con.execute("SELECT COUNT(*) FROM matches WHERE opponent_id=?",(tid,)).fetchone()[0]
-                if used:
-                    st.error("このチームとの試合記録があるため削除できません。")
-                else:
-                    con.execute("DELETE FROM teams WHERE id=?",(tid,))
-                    st.success("チームを削除しました。")
-                    st.rerun()
 
 st.markdown("---")
 st.caption("⚽ 個人用マイリーグ管理アプリ｜eFootballのゲームデータとは自動連携しません。")
